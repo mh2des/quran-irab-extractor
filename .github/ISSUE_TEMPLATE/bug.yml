@@ -1,0 +1,42 @@
+name: Bug report
+description: Something is broken in the extractor, validator, or DB builder
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug! Please include the exact CLI command you ran
+        and the output you saw vs the output you expected.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Describe the bug, with the actual output you saw.
+      placeholder: When I run `quran-irab parse 005.htm --out out/005.jsonl`, the …
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction steps
+      placeholder: |
+        1. Place 005.htm in sources/
+        2. Run `quran-irab parse sources/005.htm --out /tmp/x.jsonl`
+        3. ...
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Python + OS version
+      placeholder: "Python 3.12.4 on macOS 15.0"

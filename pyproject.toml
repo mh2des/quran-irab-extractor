@@ -1,0 +1,63 @@
+[project]
+name = "quran-irab-extractor"
+version = "0.1.0"
+description = "Extraction pipeline that converts الجدول في إعراب القرآن (Mahmud Safi) HTML into a searchable SQLite + FTS5 database covering all 6,236 ayat with i'rab, sarf, balagha, and fawa'id."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    { name = "Mansoor Shakla", email = "mansourshakla@gmail.com" },
+]
+keywords = ["quran", "arabic", "irab", "nahw", "sarf", "balagha", "nlp", "sqlite", "fts5"]
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: OS Independent",
+    "Natural Language :: Arabic",
+    "Topic :: Religion",
+    "Topic :: Text Processing :: Linguistic",
+]
+requires-python = ">=3.11"
+dependencies = [
+    "beautifulsoup4>=4.12",
+    "lxml>=5.2",
+    "pyarabic>=0.6.15",
+    "tqdm>=4.66",
+    "click>=8.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.4",
+    "mypy>=1.10",
+]
+
+[project.urls]
+Homepage = "https://github.com/mansoorshakla/quran-irab-extractor"
+Repository = "https://github.com/mansoorshakla/quran-irab-extractor"
+Issues = "https://github.com/mansoorshakla/quran-irab-extractor/issues"
+
+[project.scripts]
+quran-irab = "quran_irab.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["E501"]  # line length is enforced by formatter
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]

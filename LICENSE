@@ -1,0 +1,50 @@
+MIT License
+
+Copyright (c) 2026 Mansoor Shakla
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+—————————————————————————————————————————————————————————————————————
+
+IMPORTANT — SCOPE OF THIS MIT LICENSE
+
+The MIT License above covers ONLY the software in this repository:
+the Python extraction pipeline, schema definitions, validator, and
+build tooling.
+
+The Quranic text itself (the 6,236 ayat) is the literal word of God
+revealed in the Qur'an and is in the public domain. It is included in
+the database for matching and backfill purposes via the Tanzil-derived
+canonical reference.
+
+The i'rab, sarf, balagha, and fawa'id scholarly commentary embedded in
+the generated SQLite database is derived from:
+
+    الجدول في إعراب القرآن وصرفه وبيانه
+    by Sheikh Mahmud Safi (محمود صافي)
+    Published by Dar Al-Rashid (دار الرشيد), Damascus, 3rd edition (1416 AH / 1995 CE)
+
+That commentary is the intellectual property of the late Sheikh Mahmud Safi
+(may Allah have mercy upon him) and his publisher. This project preserves
+and indexes that scholarship to make it accessible to students of Arabic
+grammar and the Qur'an worldwide.
+
+If you redistribute the generated database, you MUST credit Sheikh Mahmud
+Safi as the source of the i'rab content. See NOTICE.md for the required
+attribution text.

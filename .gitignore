@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.python-version
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Build artifacts (regeneratable from source — uploaded as GitHub Release assets)
+out/
+*.sqlite
+*.sqlite-journal
+*.db
+*.zst
+
+# Editor
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Source HTML — never commit (copyrighted, see NOTICE.md for sourcing)
+sources/*
+!sources/README.md
+
+# Local secrets
+.env
+.env.local

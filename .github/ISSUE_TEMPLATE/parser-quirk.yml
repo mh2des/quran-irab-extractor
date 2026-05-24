@@ -1,0 +1,44 @@
+name: Parser quirk
+description: The parser missed an ayah, mis-attributed it, or extracted noisy content
+labels: ["parser-quirk"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Parser quirks are the most valuable issues to file — please include
+        the exact surah/ayah affected and a snippet of the source HTML so we
+        can reproduce and add a regression test.
+
+  - type: input
+    id: location
+    attributes:
+      label: Surah:ayah affected
+      placeholder: "16:4 (Surah An-Nahl, ayah 4)"
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What the parser actually emitted
+      description: Paste the relevant lines from your JSONL output, or note "no entry produced".
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What it should have emitted
+    validations:
+      required: true
+
+  - type: textarea
+    id: html
+    attributes:
+      label: Source HTML snippet
+      description: |
+        A few lines from the relevant `001.htm` … `015.htm` showing the
+        structural pattern. Keep it short — just enough to reproduce.
+      render: html
+    validations:
+      required: true
