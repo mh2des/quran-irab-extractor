@@ -1,4 +1,4 @@
-"""Golden tests for the assembler on Surah Al-Fatiha.
+"""Golden tests for the assembler on Surah Al-Fatiha and the word-level filter.
 
 These tests exercise the whole pipeline on a known surah whose structure
 is hand-verified. They guard against regressions in:
@@ -10,7 +10,7 @@ is hand-verified. They guard against regressions in:
 
 import pytest
 
-from quran_irab.assemble import Assembler
+from quran_irab.assemble import Assembler, _extract_words, _is_likely_word_token
 from quran_irab.tokenize import (
     AyahMarker,
     PageBoundary,
@@ -144,3 +144,51 @@ class TestSurahTransitionByCanonicalOne:
         # Group 2 triggered by canonical (1) WITHOUT a سورة title — implicit advance
         assert groups[1].surah == 2
         assert groups[1].ayat[0][0] == 1
+
+
+class TestWordLevelExtraction:
+    """Polish item: the `(word) analysis` regex used to over-capture cross-
+    references like `(انظر الآية 5)` and emit the same word multiple times
+    when it appeared inside another word's analysis. Guard the fixes."""
+
+    def test_rejects_cross_reference_tokens(self):
+        assert not _is_likely_word_token("انظر الآية 5")
+        assert not _is_likely_word_token("راجع الفائدة 3")
+        assert not _is_likely_word_token("من سورة البقرة")
+        assert not _is_likely_word_token("الآية 12")
+
+    def test_rejects_pure_numeric_tokens(self):
+        assert not _is_likely_word_token("1")
+        assert not _is_likely_word_token("  15  ")
+
+    def test_rejects_tiny_or_letterless_tokens(self):
+        assert not _is_likely_word_token("ا")          # single letter
+        assert not _is_likely_word_token("...")         # punctuation
+        assert not _is_likely_word_token("")            # empty
+
+    def test_accepts_real_word_tokens(self):
+        assert _is_likely_word_token("بسم")
+        assert _is_likely_word_token("الله")
+        assert _is_likely_word_token("يؤمنون")
+        assert _is_likely_word_token("إيّاك")
+        # Short multi-word phrases ARE sometimes the parsed unit
+        assert _is_likely_word_token("لا الناهية")
+
+    def test_dedups_repeated_tokens_in_one_block(self):
+        # Cross-reference pattern: same word appears later inside another
+        # word's analysis. The duplicate should be dropped.
+        text = (
+            "(بسم) جار ومجرور (الله) لفظ الجلالة (الرحمن) نعت "
+            "(بسم) إشارة إلى الكلمة الأولى "
+        )
+        words = _extract_words(text)
+        tokens = [w.token for w in words]
+        assert tokens == ["بسم", "الله", "الرحمن"]
+
+    def test_strips_inline_per_ayah_subheadings(self):
+        # In multi-ayah groups, الجدول inserts a bare "(5)" to mark the start
+        # of ayah 5's i'rab. That should never be captured as a word.
+        text = "(إن) حرف شرط (5) (وما) عاطفة"
+        tokens = [w.token for w in _extract_words(text)]
+        assert "5" not in tokens
+        assert tokens == ["إن", "وما"]

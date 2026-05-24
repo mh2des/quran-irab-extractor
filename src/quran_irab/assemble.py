@@ -57,10 +57,61 @@ _WORD_ANALYSIS_RE = re.compile(
 )
 _ARABIC_LETTERS_RE = re.compile(r"[ا-يآ-غ]")
 
+# Tokens that occur inside parentheses but are NOT the word being parsed.
+# These tend to be cross-references or chapter labels embedded in the analysis.
+# Order matters — these are matched as substring tests.
+_REJECT_TOKEN_KEYWORDS = (
+    "انظر",     # "see [other ayah]"
+    "راجع",     # "consult"
+    "الآية",    # "the ayah" — almost always a cross-reference
+    "آية",
+    "سورة",     # references to other surahs
+    "تقدّم",
+    "تقدم",
+    "مرّ",
+    "وانظر",
+    "الفائدة",
+    "الفوائد",
+    "الباب",
+    "ص:",        # page reference
+)
+
+# Token must be at least 1 Arabic letter; reject pure-number, pure-Latin,
+# pure-symbol fragments that the regex sometimes captures.
+_PURE_DIGITS_RE = re.compile(r"^\s*\d+\s*$")
+
 
 def _has_arabic_letters(text: str) -> bool:
     """True if the string contains at least one Arabic letter (filters punctuation-only)."""
     return bool(_ARABIC_LETTERS_RE.search(text))
+
+
+def _is_likely_word_token(token: str) -> bool:
+    """Filter out non-word captures from the (parenthesized) tokens in i'rab text.
+
+    True positives: actual words being parsed, e.g. (بسم), (الله), (يؤمنون).
+    False positives we reject:
+      - Pure numeric references like "(1)" or "(15)"
+      - Cross-references like "(انظر الآية 5)" or "(الفائدة 3)"
+      - Multi-word phrases (real word tokens are 1-3 words at most)
+      - Punctuation-only or non-Arabic fragments
+    """
+    t = token.strip()
+    if not t or len(t) < 2:
+        return False
+    if not _has_arabic_letters(t):
+        return False
+    if _PURE_DIGITS_RE.match(t):
+        return False
+    # Cross-reference keywords
+    for kw in _REJECT_TOKEN_KEYWORDS:
+        if kw in t:
+            return False
+    # Real word tokens are at most ~3 whitespace-separated parts (e.g., "يا أيها الذين")
+    # but most are 1-2 words. Anything longer is a phrase / sentence fragment.
+    if t.count(" ") > 3:
+        return False
+    return True
 
 
 # --- Output dataclasses ------------------------------------------------------
@@ -383,19 +434,57 @@ def _join_section(parts: list[str]) -> str:
 
 def _extract_words(irab_content: str) -> list[WordAnalysis]:
     """
-    Extract (word) analysis pairs from an i'rab block.
-    The first parenthesized item at the start of each analysis sentence is the
-    word being parsed; what follows up to the next (word) is its analysis.
+    Extract (word) → analysis pairs from an i'rab block.
+
+    الجدول follows the convention `(WORD) GRAMMATICAL_ANALYSIS` for each word being
+    parsed. Mid-sentence parenthetical references like `(انظر الآية 5)` or `(1)`
+    are NOT word tokens — _is_likely_word_token filters those out.
+
+    We also drop adjacent duplicates of the same token: the same word being parsed
+    twice in a row is almost always a reference back to it, not a new parse.
     """
     words: list[WordAnalysis] = []
-    position = 0
-    # Drop footnote-marker spans like [1], [2] so they don't confuse the regex
+    # Drop footnote-marker spans like [1], [2] so they don't confuse the regex.
+    # Also drop standalone numeric per-ayah subheadings like "(5)" that mark the
+    # start of ayah 5's i'rab within a multi-ayah group.
     cleaned = re.sub(r"\[\d+\]", " ", irab_content)
+    cleaned = re.sub(r"(?<!\w)\(\s*\d+\s*\)(?!\w)", " ", cleaned)
+
+    seen_tokens: set[str] = set()
     for m in _WORD_ANALYSIS_RE.finditer(cleaned):
         token = clean_display(m.group(1))
         analysis = clean_display(m.group(2))
-        if not analysis or len(token) > 60:
+
+        if not _is_likely_word_token(token):
             continue
-        words.append(WordAnalysis(position=position, token=token, analysis=analysis))
-        position += 1
+        if not analysis:
+            continue
+        # De-dup: when the same token shows up multiple times in the i'rab block,
+        # the second occurrence is almost always a cross-reference inside another
+        # word's analysis sentence, not a separate parse. Accept the false-negative
+        # on truly-repeated words (rare) to avoid the more common false-positive.
+        # Compare on normalized form so tashkeel/alif variants don't slip past.
+        token_key = normalize_ar(token)
+        if token_key in seen_tokens:
+            continue
+        analysis = _trim_analysis(analysis)
+        if not analysis:
+            continue
+
+        words.append(WordAnalysis(position=len(words), token=token, analysis=analysis))
+        seen_tokens.add(token_key)
     return words
+
+
+# Strip trailing cross-references and orphan punctuation off an analysis.
+_TRAILING_CROSS_REF_RE = re.compile(
+    r"\s*(?:،|\.|;|؛)?\s*(?:انظر|راجع|وانظر)[^.]*$"
+)
+
+
+def _trim_analysis(analysis: str) -> str:
+    out = _TRAILING_CROSS_REF_RE.sub("", analysis).strip()
+    # Collapse trailing orphan punctuation
+    while out and out[-1] in ",،;؛":
+        out = out[:-1].rstrip()
+    return out
