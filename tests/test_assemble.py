@@ -10,7 +10,12 @@ is hand-verified. They guard against regressions in:
 
 import pytest
 
-from quran_irab.assemble import Assembler, _extract_words, _is_likely_word_token
+from quran_irab.assemble import (
+    Assembler,
+    _extract_words,
+    _is_likely_word_token,
+    split_irab_by_ayah,
+)
 from quran_irab.tokenize import (
     AyahMarker,
     PageBoundary,
@@ -174,21 +179,60 @@ class TestWordLevelExtraction:
         # Short multi-word phrases ARE sometimes the parsed unit
         assert _is_likely_word_token("لا الناهية")
 
-    def test_dedups_repeated_tokens_in_one_block(self):
-        # Cross-reference pattern: same word appears later inside another
-        # word's analysis. The duplicate should be dropped.
-        text = (
-            "(بسم) جار ومجرور (الله) لفظ الجلالة (الرحمن) نعت "
-            "(بسم) إشارة إلى الكلمة الأولى "
-        )
-        words = _extract_words(text)
-        tokens = [w.token for w in words]
-        assert tokens == ["بسم", "الله", "الرحمن"]
+    def test_drops_consecutive_duplicate_tokens_only(self):
+        # A consecutive duplicate is an artifact and is dropped; a NON-consecutive
+        # repeat (legit re-parse within one ayah) is now KEPT, because inputs are
+        # per-ayah segments where cross-ayah repetition no longer occurs.
+        text = "(بسم) جار ومجرور (بسم) تكرار فوري (الله) لفظ الجلالة (بسم) إشارة لاحقة"
+        tokens = [w.token for w in _extract_words(text)]
+        assert tokens == ["بسم", "الله", "بسم"]
+
+    def test_extracts_comma_attached_first_word(self):
+        # "(أولاء)،اسم إشارة" — comma right after the paren, NO space. The old
+        # regex required \s+ and silently dropped أولاء (the verse's first word).
+        text = "(أولاء)،اسم إشارة مبني (الكاف) حرف خطاب"
+        tokens = [w.token for w in _extract_words(text)]
+        assert tokens == ["أولاء", "الكاف"]
 
     def test_strips_inline_per_ayah_subheadings(self):
-        # In multi-ayah groups, الجدول inserts a bare "(5)" to mark the start
-        # of ayah 5's i'rab. That should never be captured as a word.
-        text = "(إن) حرف شرط (5) (وما) عاطفة"
+        # In multi-ayah groups, الجدول inserts a bare "(5)" or "5 -" to mark the
+        # start of an ayah's i'rab. Those must never be captured as words.
+        text = "(إن) حرف شرط (5) (وما) عاطفة 6 - (الفاء) رابطة"
         tokens = [w.token for w in _extract_words(text)]
-        assert "5" not in tokens
-        assert tokens == ["إن", "وما"]
+        assert tokens == ["إن", "وما", "الفاء"]
+
+
+class TestSplitIrabByAyah:
+    """The core fix for 'wrong i'rab for wrong ayah': a multi-ayah block is
+    split into per-ayah segments using the source's N - / (N) markers."""
+
+    def test_single_ayah_returns_whole(self):
+        assert split_irab_by_ayah("(بسم) جار", 1, 1) == {1: "(بسم) جار"}
+
+    def test_dash_markers(self):
+        content = "(أ) ايه11 12 -(ب) ايه12 13 -(ج) ايه13"
+        seg = split_irab_by_ayah(content, 11, 13)
+        assert seg == {11: "(أ) ايه11", 12: "(ب) ايه12", 13: "(ج) ايه13"}
+
+    def test_parenthesised_markers(self):
+        content = "(أ) ايه4 (5)(ب) ايه5 (6)(ج) ايه6"
+        seg = split_irab_by_ayah(content, 4, 6)
+        assert seg == {4: "(أ) ايه4", 5: "(ب) ايه5", 6: "(ج) ايه6"}
+
+    def test_shared_adjacent_markers(self):
+        # "14 -15 -" means ayat 14 and 15 share the following text
+        content = "(أ) ايه13بداية 14 -15 - (ب) مشترك 16 -(ج) ايه16"
+        seg = split_irab_by_ayah(content, 13, 16)
+        assert seg[14] == seg[15] == "(ب) مشترك"
+        assert seg[13] == "(أ) ايه13بداية"
+        assert seg[16] == "(ج) ايه16"
+
+    def test_no_markers_returns_none(self):
+        # Genuinely merged block — caller shares it across the group.
+        assert split_irab_by_ayah("(أ) كلام بلا علامات", 3, 4) is None
+
+    def test_ignores_out_of_range_and_non_monotonic(self):
+        # "1 -" enumeration (out of group range) and a backwards number must not
+        # trigger a false split.
+        content = "(أ) نص 1 - تعداد ليس علامة آية"
+        assert split_irab_by_ayah(content, 11, 16) is None

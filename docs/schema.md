@@ -47,26 +47,47 @@ extracted text from `الجدول` or backfilled from Tanzil.
 
 ### `irab_entries`
 
-One row per section type per group. Section types are: `irab`, `sarf`,
-`balagha`, `fawaid`. Not every group has every section.
+Holds the grammatical commentary. **Schema v2 splits i'rab per-ayah:**
+
+- `section='irab'`: **one row per ayah**. `ayah` is set to that ayah's number.
+  A multi-ayah group's i'rab block is split using the source's `N -` / `(N)`
+  per-ayah markers (see [source-format.md](source-format.md)). When the source
+  genuinely merged the ayat (no markers), each ayah gets the whole block with
+  `is_shared = 1`.
+- `section='sarf'|'balagha'|'fawaid'|'mufradat'`: **one row per group**, with
+  `ayah = NULL` (these are inherently group-level). For a multi-ayah group the
+  app labels them "covers ayat X–Y".
 
 | Column | Type | Notes |
 |---|---|---|
 | `id` | INTEGER PRIMARY KEY | |
 | `group_id` | INTEGER NOT NULL | FK → `ayah_groups.id` |
-| `section` | TEXT NOT NULL | One of `irab`, `sarf`, `balagha`, `fawaid` |
+| `ayah` | INTEGER NULL | The specific ayah for `irab` rows; NULL for group-level sections |
+| `section` | TEXT NOT NULL | One of `irab`, `sarf`, `balagha`, `fawaid`, `mufradat` |
+| `is_shared` | INTEGER NOT NULL | 1 when this `irab` row is the whole group block shared across an undelimited multi-ayah group |
 | `content` | TEXT NOT NULL | Rich text with `[N]` footnote markers and `### sub-headings` |
 | `content_normalized` | TEXT NOT NULL | For FTS5 |
 
+To fetch one ayah's full bundle:
+
+```sql
+SELECT section, content, is_shared
+FROM irab_entries
+WHERE group_id = ? AND (ayah = ? OR ayah IS NULL);
+```
+
 ### `ayah_words`
 
-Word-by-word grammatical analysis, extracted from `irab` sections only.
+Word-by-word grammatical analysis, extracted **per ayah** from the (split)
+`irab` segment. Only the word-by-word portion is captured — the sentence-level
+(جُمَل) analysis that follows it in the source is excluded.
 
 | Column | Type | Notes |
 |---|---|---|
 | `id` | INTEGER PRIMARY KEY | |
 | `group_id` | INTEGER NOT NULL | FK → `ayah_groups.id` |
-| `position` | INTEGER NOT NULL | 0-indexed position within the group's i'rab |
+| `ayah` | INTEGER NOT NULL | The specific ayah these words parse |
+| `position` | INTEGER NOT NULL | 0-indexed position within the ayah's i'rab |
 | `token` | TEXT NOT NULL | The Arabic word being parsed (e.g. `الحمد`) |
 | `token_normalized` | TEXT NOT NULL | Normalized form |
 | `analysis` | TEXT NOT NULL | Grammatical role (e.g. `مبتدأ مرفوع`) |

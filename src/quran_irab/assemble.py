@@ -51,11 +51,20 @@ _AYAH_TEXT_RE = re.compile(r"\{(.*?)\}", re.DOTALL)
 _AYAH_NUM_AT_END_RE = re.compile(r"\s*\(\s*(\d+)\s*\)\s*$")
 # Split a multi-ayah braced block on (N) boundaries — each ayah's text ends with (N)
 _AYAH_SPLIT_RE = re.compile(r"\s*\(\s*(\d+)\s*\)\s*")
+# Capture `(token) analysis` pairs. The separator after the closing paren may be
+# whitespace, an Arabic comma/colon/semicolon, or NOTHING — the source is wildly
+# inconsistent (e.g. "(أولاء)،اسم إشارة" has a comma and no space). Earlier this
+# required \s+ and silently dropped every comma-attached first word.
 _WORD_ANALYSIS_RE = re.compile(
-    r"\(([^()\n]{1,60}?)\)\s+([^(]+?)(?=\([^()]{1,60}\)\s+|$)",
+    r"\(([^()\n]{1,60}?)\)[\s،:؛]*([^(]+?)(?=\([^()\n]{1,60}\)|$)",
     re.DOTALL,
 )
 _ARABIC_LETTERS_RE = re.compile(r"[ا-يآ-غ]")
+
+# Per-ayah delimiters the source embeds inside a multi-ayah i'rab block. Two
+# forms occur: "12 -" (number-dash, e.g. Ta-Ha) and "(5)" (parenthesised, e.g.
+# Ash-Shu'ara). See docs/source-format.md.
+_AYAH_MARKER_RE = re.compile(r"\((\d{1,3})\)|(?<![\d٠-٩])(\d{1,3})\s*-")
 
 # Tokens that occur inside parentheses but are NOT the word being parsed.
 # These tend to be cross-references or chapter labels embedded in the analysis.
@@ -432,47 +441,96 @@ def _join_section(parts: list[str]) -> str:
     return joined.strip()
 
 
+def split_irab_by_ayah(content: str, ayah_start: int, ayah_end: int) -> dict[int, str] | None:
+    """Split a multi-ayah i'rab block into {ayah_num: segment_text}.
+
+    الجدول delimits each ayah inside a shared i'rab block with a `12 -` or `(5)`
+    marker (see _AYAH_MARKER_RE). The text before the first marker belongs to the
+    group's first ayah; each marker opens the segment for its ayah. Adjacent
+    markers ("14 -15 -") mean those ayat share the following segment.
+
+    Returns:
+      - {start: content} for a single-ayah group (trivial).
+      - {ayah: text, ...} when usable markers are found.
+      - None when the block has no per-ayah markers (genuinely merged in the
+        source — the caller should treat the whole block as shared across the
+        group and label it with the ayah range).
+
+    Only in-range, strictly-increasing markers are accepted, so stray numbers
+    inside the prose can't trigger a false split.
+    """
+    if ayah_start == ayah_end:
+        return {ayah_start: content.strip()}
+
+    markers: list[tuple[int, int, int]] = []  # (start, end, ayah_num)
+    expected = ayah_start + 1
+    for m in _AYAH_MARKER_RE.finditer(content):
+        n = int(m.group(1) or m.group(2))
+        if ayah_start < n <= ayah_end and n >= expected:
+            markers.append((m.start(), m.end(), n))
+            expected = n + 1
+    if not markers:
+        return None
+
+    result: dict[int, str] = {ayah_start: content[: markers[0][0]].strip()}
+    pending: list[int] = []
+    for i, (_s, e, n) in enumerate(markers):
+        seg_end = markers[i + 1][0] if i + 1 < len(markers) else len(content)
+        text = content[e:seg_end].strip()
+        pending.append(n)
+        if text:  # this segment carries its own text → assign to all pending ayat
+            for a in pending:
+                result[a] = text
+            pending = []
+    for a in pending:  # trailing markers with no following text (rare)
+        result.setdefault(a, "")
+    return result
+
+
+# An i'rab segment has two parts: word-by-word parsing `(word) analysis ...`
+# FOLLOWED by sentence-level parsing `جملة: «...» محلّها ...`. The word chips
+# should only cover the first part — everything from the first جملة/المصدر
+# marker onward is clause analysis, not word tokens. Truncating here removes the
+# trailing fragment "words" the regex would otherwise pull from the prose.
+_JUMAL_BOUNDARY_RE = re.compile(r"و?جملة\s*[:«]|وال?مصدر\s+المؤوّل|والجملة")
+
+
 def _extract_words(irab_content: str) -> list[WordAnalysis]:
     """
-    Extract (word) → analysis pairs from an i'rab block.
+    Extract (word) → analysis pairs from an i'rab segment.
 
     الجدول follows the convention `(WORD) GRAMMATICAL_ANALYSIS` for each word being
     parsed. Mid-sentence parenthetical references like `(انظر الآية 5)` or `(1)`
     are NOT word tokens — _is_likely_word_token filters those out.
 
-    We also drop adjacent duplicates of the same token: the same word being parsed
-    twice in a row is almost always a reference back to it, not a new parse.
+    Inputs are now per-ayah segments (see split_irab_by_ayah), so cross-ayah
+    repetition is gone; de-dup is therefore limited to *consecutive* identical
+    tokens (a true artifact) rather than all repeats — this stops us from
+    dropping a word that the source legitimately parses twice within one ayah.
     """
     words: list[WordAnalysis] = []
-    # Drop footnote-marker spans like [1], [2] so they don't confuse the regex.
-    # Also drop standalone numeric per-ayah subheadings like "(5)" that mark the
-    # start of ayah 5's i'rab within a multi-ayah group.
-    cleaned = re.sub(r"\[\d+\]", " ", irab_content)
+    # Only the word-by-word portion (before the جُمَل clause analysis) yields words.
+    boundary = _JUMAL_BOUNDARY_RE.search(irab_content)
+    word_zone = irab_content[: boundary.start()] if boundary else irab_content
+    # Drop footnote-marker spans like [1], [2] and any leftover per-ayah
+    # markers ("(5)" or "5 -") so they don't masquerade as word tokens.
+    cleaned = re.sub(r"\[\d+\]", " ", word_zone)
     cleaned = re.sub(r"(?<!\w)\(\s*\d+\s*\)(?!\w)", " ", cleaned)
+    cleaned = re.sub(r"(?<![\d٠-٩])\d{1,3}\s*-", " ", cleaned)
 
-    seen_tokens: set[str] = set()
+    last_key: str | None = None
     for m in _WORD_ANALYSIS_RE.finditer(cleaned):
         token = clean_display(m.group(1))
-        analysis = clean_display(m.group(2))
+        analysis = _trim_analysis(clean_display(m.group(2)))
 
-        if not _is_likely_word_token(token):
+        if not _is_likely_word_token(token) or not analysis:
             continue
-        if not analysis:
-            continue
-        # De-dup: when the same token shows up multiple times in the i'rab block,
-        # the second occurrence is almost always a cross-reference inside another
-        # word's analysis sentence, not a separate parse. Accept the false-negative
-        # on truly-repeated words (rare) to avoid the more common false-positive.
-        # Compare on normalized form so tashkeel/alif variants don't slip past.
         token_key = normalize_ar(token)
-        if token_key in seen_tokens:
-            continue
-        analysis = _trim_analysis(analysis)
-        if not analysis:
+        if token_key == last_key:  # consecutive duplicate → artifact, skip
             continue
 
         words.append(WordAnalysis(position=len(words), token=token, analysis=analysis))
-        seen_tokens.add(token_key)
+        last_key = token_key
     return words
 
 

@@ -92,7 +92,7 @@ class TestDatabaseBuild:
         build_database(sample_jsonl, out)
         conn = sqlite3.connect(out)
         meta = dict(conn.execute("SELECT key, value FROM meta").fetchall())
-        assert meta["schema_version"] == "1"
+        assert meta["schema_version"] == "2"
         assert "محمود صافي" in meta["source"]
         assert "Tanzil" in meta["canonical_reference"]
 

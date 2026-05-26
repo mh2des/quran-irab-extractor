@@ -20,10 +20,14 @@ from datetime import date
 from pathlib import Path
 from typing import Iterable
 
+from .assemble import _extract_words, split_irab_by_ayah
 from .normalize import normalize_ar
 from .surahs import CANONICAL_AYAH_COUNTS, CANONICAL_NAMES
 
-SCHEMA_VERSION = 1
+# v2: i'rab is now stored per-ayah (irab_entries.ayah), with صرف/بلاغة/فوائد
+# kept group-level (ayah NULL). ayah_words gains an `ayah` column. This lets the
+# app show only the tapped ayah's i'rab + words instead of the whole group's.
+SCHEMA_VERSION = 2
 
 SCHEMA_SQL = """
 PRAGMA journal_mode = OFF;
@@ -61,21 +65,30 @@ CREATE INDEX idx_ayat_group ON ayat(group_id);
 CREATE TABLE irab_entries (
     id                 INTEGER PRIMARY KEY,
     group_id           INTEGER NOT NULL REFERENCES ayah_groups(id),
+    -- For section='irab': the specific ayah this segment belongs to.
+    -- For section='sarf'|'balagha'|'fawaid'|'mufradat': NULL (group-level).
+    ayah               INTEGER,
     section            TEXT NOT NULL,    -- 'irab' | 'sarf' | 'balagha' | 'fawaid' | 'mufradat'
+    -- 1 when this irab segment is the whole group's block shared across a
+    -- multi-ayah group (the source didn't delimit this ayah). The app shows a
+    -- "covers ayat X-Y" label in that case.
+    is_shared          INTEGER NOT NULL DEFAULT 0,
     content            TEXT NOT NULL,
     content_normalized TEXT NOT NULL
 );
 CREATE INDEX idx_irab_group_section ON irab_entries(group_id, section);
+CREATE INDEX idx_irab_ayah ON irab_entries(group_id, ayah, section);
 
 CREATE TABLE ayah_words (
     id               INTEGER PRIMARY KEY,
     group_id         INTEGER NOT NULL REFERENCES ayah_groups(id),
+    ayah             INTEGER NOT NULL,   -- the specific ayah these words parse
     position         INTEGER NOT NULL,
     token            TEXT NOT NULL,
     token_normalized TEXT NOT NULL,
     analysis         TEXT NOT NULL
 );
-CREATE INDEX idx_words_group ON ayah_words(group_id, position);
+CREATE INDEX idx_words_group ON ayah_words(group_id, ayah, position);
 CREATE INDEX idx_words_token ON ayah_words(token_normalized);
 
 CREATE TABLE footnotes (
@@ -153,10 +166,50 @@ def build_database(jsonl_path: Path, out_path: Path) -> dict:
             )
             stats["ayat"] += 1
 
-        for section_key, section in group.get("sections", {}).items():
+        sections = group.get("sections", {})
+        ayah_start = group["ayah_start"]
+        ayah_end = group["ayah_end"]
+        group_ayat = [a["num"] for a in group["ayat"]]
+
+        # --- i'rab: split per ayah (the core fix for "wrong i'rab for wrong ayah") ---
+        irab = sections.get("irab")
+        if irab:
+            segments = split_irab_by_ayah(irab["content"], ayah_start, ayah_end)
+            if segments is None:
+                # No per-ayah markers: the source genuinely merged these ayat.
+                # Store the whole block once per ayah, flagged shared so the app
+                # can label it "covers ayat X-Y".
+                full = irab["content"]
+                full_norm = irab.get("content_normalized") or normalize_ar(full)
+                shared_words = _extract_words(full)
+                for num in group_ayat:
+                    _insert_irab(conn, group_id, num, full, full_norm, is_shared=1)
+                    stats["irab_entries"] += 1
+                    _insert_words(conn, group_id, num, shared_words)
+                    stats["ayah_words"] += len(shared_words)
+            else:
+                for num in group_ayat:
+                    seg = segments.get(num)
+                    shared = 0
+                    if not seg:
+                        # Partial coverage: this ayah wasn't delimited (merged
+                        # into a neighbour). Fall back to the full group block.
+                        seg = irab["content"]
+                        shared = 1
+                    _insert_irab(conn, group_id, num, seg, normalize_ar(seg), is_shared=shared)
+                    stats["irab_entries"] += 1
+                    words = _extract_words(seg)
+                    _insert_words(conn, group_id, num, words)
+                    stats["ayah_words"] += len(words)
+
+        # --- other sections: group-level (ayah NULL) ---
+        for section_key, section in sections.items():
+            if section_key == "irab":
+                continue
             conn.execute(
-                "INSERT INTO irab_entries (group_id, section, content, content_normalized) "
-                "VALUES (?, ?, ?, ?)",
+                "INSERT INTO irab_entries "
+                "(group_id, ayah, section, is_shared, content, content_normalized) "
+                "VALUES (?, NULL, ?, 0, ?, ?)",
                 (
                     group_id, section_key,
                     section["content"],
@@ -164,17 +217,6 @@ def build_database(jsonl_path: Path, out_path: Path) -> dict:
                 ),
             )
             stats["irab_entries"] += 1
-
-            if section_key == "irab":
-                for w in section.get("words", []):
-                    conn.execute(
-                        "INSERT INTO ayah_words "
-                        "(group_id, position, token, token_normalized, analysis) "
-                        "VALUES (?, ?, ?, ?, ?)",
-                        (group_id, w["position"], w["token"],
-                         normalize_ar(w["token"]), w["analysis"]),
-                    )
-                    stats["ayah_words"] += 1
 
         for fn in group.get("footnotes", []):
             conn.execute(
@@ -213,6 +255,25 @@ def build_database(jsonl_path: Path, out_path: Path) -> dict:
     conn.executescript("PRAGMA journal_mode = DELETE; VACUUM; ANALYZE;")
     conn.close()
     return stats
+
+
+def _insert_irab(conn, group_id, ayah, content, content_norm, *, is_shared):
+    conn.execute(
+        "INSERT INTO irab_entries "
+        "(group_id, ayah, section, is_shared, content, content_normalized) "
+        "VALUES (?, ?, 'irab', ?, ?, ?)",
+        (group_id, ayah, is_shared, content, content_norm),
+    )
+
+
+def _insert_words(conn, group_id, ayah, words):
+    for w in words:
+        conn.execute(
+            "INSERT INTO ayah_words "
+            "(group_id, ayah, position, token, token_normalized, analysis) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (group_id, ayah, w.position, w.token, normalize_ar(w.token), w.analysis),
+        )
 
 
 def _iter_jsonl(path: Path) -> Iterable[dict]:
