@@ -21,13 +21,16 @@ from pathlib import Path
 from typing import Iterable
 
 from .assemble import _extract_words, split_irab_by_ayah
-from .normalize import normalize_ar
+from .normalize import loose_match_normalize, normalize_ar
 from .surahs import CANONICAL_AYAH_COUNTS, CANONICAL_NAMES
 
 # v2: i'rab is now stored per-ayah (irab_entries.ayah), with صرف/بلاغة/فوائد
 # kept group-level (ayah NULL). ayah_words gains an `ayah` column. This lets the
 # app show only the tapped ayah's i'rab + words instead of the whole group's.
-SCHEMA_VERSION = 2
+# v3: ayat gains an `uthmani` column — the Tanzil Uthmani text (basmala stripped
+# on ayah 1) for authentic Madinah-Mushaf rendering, separate from the الجدول
+# `text` that the i'rab is keyed to.
+SCHEMA_VERSION = 3
 
 SCHEMA_SQL = """
 PRAGMA journal_mode = OFF;
@@ -53,8 +56,9 @@ CREATE TABLE ayat (
     id               INTEGER PRIMARY KEY,
     surah            INTEGER NOT NULL,
     ayah             INTEGER NOT NULL,
-    text             TEXT NOT NULL,
+    text             TEXT NOT NULL,           -- الجدول Hafs text (i'rab is keyed to this)
     text_normalized  TEXT NOT NULL,
+    uthmani          TEXT,                    -- Tanzil Uthmani text for Mushaf display
     group_id         INTEGER NOT NULL REFERENCES ayah_groups(id),
     is_backfilled    INTEGER NOT NULL DEFAULT 0,
     UNIQUE(surah, ayah)
@@ -127,6 +131,8 @@ def build_database(jsonl_path: Path, out_path: Path) -> dict:
     conn = sqlite3.connect(out_path)
     conn.executescript(SCHEMA_SQL)
 
+    uthmani_map = _load_uthmani()
+
     # 1) Surahs
     conn.executemany(
         "INSERT INTO surahs (id, name, ayah_count) VALUES (?, ?, ?)",
@@ -153,14 +159,16 @@ def build_database(jsonl_path: Path, out_path: Path) -> dict:
         stats["groups"] += 1
 
         for ayah in group["ayat"]:
+            uthmani = uthmani_map.get((group["surah"], ayah["num"]))
             conn.execute(
                 "INSERT OR REPLACE INTO ayat "
-                "(surah, ayah, text, text_normalized, group_id, is_backfilled) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
+                "(surah, ayah, text, text_normalized, uthmani, group_id, is_backfilled) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
                     group["surah"], ayah["num"],
                     ayah["text"],
                     ayah.get("text_normalized") or normalize_ar(ayah["text"]),
+                    uthmani,
                     group_id, is_backfilled,
                 ),
             )
@@ -255,6 +263,37 @@ def build_database(jsonl_path: Path, out_path: Path) -> dict:
     conn.executescript("PRAGMA journal_mode = DELETE; VACUUM; ANALYZE;")
     conn.close()
     return stats
+
+
+_UTHMANI_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "quran-uthmani.json"
+# Loose match (drops alifs/hamza) so the Uthmani dagger-alif spelling
+# "ٱلرَّحْمَٰنِ" still equals the plain "الرحمن". normalize_ar alone would turn the
+# dagger alif into a written alif ("الرحمان") and miss the match.
+_BASMALA_LOOSE = loose_match_normalize("بسم الله الرحمن الرحيم")
+
+
+def _strip_uthmani_basmala(surah: int, ayah: int, text: str) -> str:
+    """The Tanzil text prepends the basmala to ayah 1 of every surah; the Mushaf
+    shows the basmala as a separate header, so strip it for ayah 1 (except
+    Al-Fatiha, whose 1:1 IS the basmala, and At-Tawba, which has none)."""
+    if ayah != 1 or surah in (1, 9):
+        return text
+    parts = text.split()
+    if len(parts) >= 4 and loose_match_normalize(" ".join(parts[:4])) == _BASMALA_LOOSE:
+        return " ".join(parts[4:]).strip()
+    return text
+
+
+def _load_uthmani() -> dict[tuple[int, int], str]:
+    """Load Tanzil Uthmani text keyed by (surah, ayah), BOM- and basmala-stripped."""
+    raw = json.loads(_UTHMANI_PATH.read_text(encoding="utf-8"))
+    out: dict[tuple[int, int], str] = {}
+    for key, text in raw.items():
+        s_str, a_str = key.split(":")
+        s, a = int(s_str), int(a_str)
+        text = text.lstrip("﻿").strip()
+        out[(s, a)] = _strip_uthmani_basmala(s, a, text)
+    return out
 
 
 def _insert_irab(conn, group_id, ayah, content, content_norm, *, is_shared):
